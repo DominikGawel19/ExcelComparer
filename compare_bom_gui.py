@@ -42,6 +42,15 @@ def is_pozycja(val):
     return bool(re.match(r'^[A-Z]{1,4}-\d+', str(val).strip()))
 
 
+def is_lb_data_row(vals):
+    """LB data row: any non-empty col A that is not the header line."""
+    v = vals[0]
+    if v is None:
+        return False
+    s = str(v).strip()
+    return s != '' and s != 'Pozycja:'
+
+
 def is_parent_ls(vals):
     if not is_pozycja(vals[0]):
         return False
@@ -60,19 +69,28 @@ def read_data_rows(wb_data_only, sheet_name, data_start):
     return rows
 
 
-def build_old_map(old_rows, is_ls=False):
+def build_old_map(old_rows, is_ls=False, is_lb=False):
+    """
+    Returns dict: key -> list of vals (ordered by appearance).
+    For LS: key = (pozycja, 'parent'|'child').
+    For LB: key = pozycja string (any col-A value), duplicates stored in order.
+    For others: key = pozycja string.
+    """
     result = {}
-    for excel_row, vals in old_rows:
-        if not is_pozycja(vals[0]):
-            continue
-        key = str(vals[0]).strip()
-        if is_ls:
-            composite = (key, 'parent' if is_parent_ls(vals) else 'child')
+    for _excel_row, vals in old_rows:
+        if is_lb:
+            if not is_lb_data_row(vals):
+                continue
+            key = str(vals[0]).strip()
         else:
-            composite = key
-        if composite not in result:
-            result[composite] = []
-        result[composite].append((excel_row, vals))
+            if not is_pozycja(vals[0]):
+                continue
+            key = str(vals[0]).strip()
+            if is_ls:
+                key = (key, 'parent' if is_parent_ls(vals) else 'child')
+        if key not in result:
+            result[key] = []
+        result[key].append(vals)
     return result
 
 
@@ -106,23 +124,35 @@ def apply_red_text(ws, excel_row, col_1based):
     )
 
 
-def compare_sheet(ws_out, old_rows, new_rows, is_ls=False):
-    old_map = build_old_map(old_rows, is_ls=is_ls)
+def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
+    old_map = build_old_map(old_rows, is_ls=is_ls, is_lb=is_lb)
+    # occurrence counter: for duplicate keys, match nth new to nth old
+    occurrence = {}
     changed_positions = set()
 
     for excel_row, new_vals in new_rows:
-        if not is_pozycja(new_vals[0]):
-            continue
-        pozycja = str(new_vals[0]).strip()
-        parent = is_ls and is_parent_ls(new_vals)
-        key = (pozycja, 'parent' if parent else 'child') if is_ls else pozycja
+        if is_lb:
+            if not is_lb_data_row(new_vals):
+                continue
+            pozycja = str(new_vals[0]).strip()
+            key = pozycja
+        else:
+            if not is_pozycja(new_vals[0]):
+                continue
+            pozycja = str(new_vals[0]).strip()
+            parent = is_ls and is_parent_ls(new_vals)
+            key = (pozycja, 'parent' if parent else 'child') if is_ls else pozycja
 
-        if key not in old_map:
+        idx = occurrence.get(key, 0)
+        occurrence[key] = idx + 1
+
+        if key not in old_map or idx >= len(old_map[key]):
+            # New item not present in old version
             apply_yellow_row(ws_out, excel_row, MAX_COL)
             changed_positions.add(pozycja)
             continue
 
-        old_vals = old_map[key][0][1]
+        old_vals = old_map[key][idx]
         n_cols = max(len(new_vals), len(old_vals))
         changed_cols = []
         for i in range(n_cols):
@@ -205,7 +235,8 @@ def run_comparison(old_file, new_file, data_start, log_cb):
         ws_out = wb_out[sheet]
 
         is_ls = sheet == 'LS'
-        changed = compare_sheet(ws_out, old_rows, new_rows, is_ls=is_ls)
+        is_lb = sheet == 'LB'
+        changed = compare_sheet(ws_out, old_rows, new_rows, is_ls=is_ls, is_lb=is_lb)
 
         if is_ls:
             child_to_parent = build_ls_child_to_parent(new_rows)
