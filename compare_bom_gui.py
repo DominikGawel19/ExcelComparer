@@ -286,8 +286,6 @@ class App(TkinterDnD.Tk):
         tk.Label(row_frame, text='Pierwszy wiersz danych (nagłówek +1):').pack(side='left')
         tk.Spinbox(row_frame, from_=2, to=999, textvariable=self.start_row,
                    width=6).pack(side='left', padx=8)
-        tk.Label(row_frame, text='(domyślnie 11 dla tego projektu)',
-                 fg='gray').pack(side='left')
 
         # ── Run button ──
         self.run_btn = tk.Button(self, text='▶  Porównaj', command=self._run,
