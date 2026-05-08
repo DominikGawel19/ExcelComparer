@@ -283,6 +283,47 @@ def clear_print_area_xml(xlsx_path):
     os.replace(tmp_path, xlsx_path)
 
 
+def clean_comparison_file(file_path, log_cb):
+    """Remove old-values columns (M+) from every sheet and set print area to A–I data range."""
+    wb = load_workbook(file_path)
+
+    for sheet in DATA_SHEETS:
+        if sheet not in wb.sheetnames:
+            log_cb(f'  {sheet}: pominięty (brak arkusza)')
+            continue
+        ws = wb[sheet]
+
+        # Clear values and formatting from column M onwards
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.column >= OLD_COL_START:
+                    cell.value = None
+                    cell.fill = PatternFill()
+                    cell.font = Font()
+
+        # Reset column widths for M+ columns
+        for i in range(OLD_COL_START, OLD_COL_START + MAX_COL):
+            col = get_column_letter(i)
+            if col in ws.column_dimensions:
+                ws.column_dimensions[col].width = ws.column_dimensions[col].width
+                del ws.column_dimensions[col]
+
+        # Find last row with data in columns A–I (stop before DELETED ELEMENTS section)
+        last_row = 1
+        for r in range(1, ws.max_row + 1):
+            if ws.cell(row=r, column=1).value == 'DELETED ELEMENTS:':
+                break
+            if any(ws.cell(row=r, column=c).value is not None for c in range(1, MAX_COL + 1)):
+                last_row = r
+
+        ws.print_area = f'A1:{get_column_letter(MAX_COL)}{last_row}'
+        log_cb(f'  {sheet}: obszar wydruku A1:I{last_row}')
+
+    log_cb('Zapisywanie...')
+    wb.save(file_path)
+    log_cb('Gotowe!')
+
+
 def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
     if lg_data_start is None:
         lg_data_start = data_start
@@ -356,6 +397,7 @@ class App(TkinterDnD.Tk):
         self.new_path = tk.StringVar()
         self.start_row = tk.StringVar(value='11')
         self.start_row_lg = tk.StringVar(value='11')
+        self.clean_path = tk.StringVar()
 
         self._build_ui()
 
@@ -423,6 +465,39 @@ class App(TkinterDnD.Tk):
         sb = ttk.Scrollbar(log_frame, command=self.log.yview)
         self.log['yscrollcommand'] = sb.set
 
+        # ── Clean section ──
+        clean_frame = tk.LabelFrame(self, text='Przygotuj do druku', padx=8, pady=8)
+        clean_frame.pack(fill='x', pady=(8, 4))
+
+        self.clean_drop = tk.Label(
+            clean_frame,
+            text=HINT,
+            relief='groove', bg='#f0f0f0',
+            width=56, height=3,
+            wraplength=420, justify='center',
+            anchor='center'
+        )
+        self.clean_drop.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        clean_clear_btn = tk.Button(
+            clean_frame, text='✕', width=3,
+            fg='#c62828', relief='flat', cursor='hand2',
+            command=lambda: self._clear_path(self.clean_path, self.clean_drop, HINT)
+        )
+        clean_clear_btn.pack(side='left')
+
+        self.clean_drop.drop_target_register(DND_FILES)
+        self.clean_drop.dnd_bind('<<Drop>>', lambda e: self._on_drop(e, self.clean_path, self.clean_drop))
+        self.clean_drop.bind('<Button-1>', lambda e: self._browse(self.clean_path, self.clean_drop))
+
+        self.clean_btn = tk.Button(
+            self, text='🖨  Usuń stare wartości i ustaw obszar wydruku',
+            command=self._clean,
+            bg='#1565c0', fg='white', font=('Arial', 10, 'bold'),
+            padx=12, pady=5, relief='flat', cursor='hand2'
+        )
+        self.clean_btn.pack(pady=(4, 8))
+
     def _clear_path(self, var, label, hint):
         var.set('')
         label.config(text=hint, bg='#f0f0f0')
@@ -486,6 +561,31 @@ class App(TkinterDnD.Tk):
                 self._log(f'\n❌ Błąd: {ex}')
             finally:
                 self.run_btn.config(state='normal', text='▶  Porównaj')
+
+        threading.Thread(target=task, daemon=True).start()
+
+
+    def _clean(self):
+        path = self.clean_path.get()
+        if not path or not os.path.isfile(path):
+            messagebox.showerror('Błąd', 'Wybierz plik z porównaniem (_POROWNANIE.xlsx).')
+            return
+
+        self.clean_btn.config(state='disabled', text='Przetwarzanie...')
+        self.log.config(state='normal')
+        self.log.delete('1.0', 'end')
+        self.log.config(state='disabled')
+
+        def task():
+            try:
+                clean_comparison_file(path, self._log)
+            except Exception as ex:
+                self._log(f'\n❌ Błąd: {ex}')
+            finally:
+                self.clean_btn.config(
+                    state='normal',
+                    text='🖨  Usuń stare wartości i ustaw obszar wydruku'
+                )
 
         threading.Thread(target=task, daemon=True).start()
 
