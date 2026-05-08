@@ -16,7 +16,8 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 YELLOW_FILL = PatternFill(fill_type='solid', start_color='FFFFFF00', end_color='FFFFFF00')
 DELETE_FILL = PatternFill(fill_type='solid', start_color='FFFFC7CE', end_color='FFFFC7CE')
 RED_COLOR = 'FFFF0000'
-MAX_COL = 9  # Fill yellow only up to column I
+MAX_COL = 9       # Fill yellow only up to column I
+OLD_COL_START = 13  # Column M — old values placed here for changed rows
 DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
 
 
@@ -184,6 +185,7 @@ def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
     # occurrence counter: for duplicate keys, match nth new to nth old
     occurrence = {}
     changed_positions = set()
+    row_details = {}  # excel_row -> (old_vals, set of 1-based changed cols)
 
     for excel_row, new_vals in new_rows:
         if is_lb:
@@ -202,7 +204,6 @@ def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
         occurrence[key] = idx + 1
 
         if key not in old_map or idx >= len(old_map[key]):
-            # New item not present in old version
             apply_yellow_row(ws_out, excel_row, MAX_COL)
             changed_positions.add(pozycja)
             continue
@@ -221,8 +222,9 @@ def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
             for col in changed_cols:
                 apply_red_text(ws_out, excel_row, col)
             changed_positions.add(pozycja)
+            row_details[excel_row] = (old_vals, set(changed_cols))
 
-    return changed_positions
+    return changed_positions, row_details
 
 
 def mark_ls_parents(ws_out, new_rows, changed_children, child_to_parent):
@@ -233,6 +235,17 @@ def mark_ls_parents(ws_out, new_rows, changed_children, child_to_parent):
         if is_pozycja(vals[0]) and is_parent_ls(vals):
             if str(vals[0]).strip() in parents_to_mark:
                 apply_yellow_row(ws_out, excel_row, MAX_COL)
+
+
+def write_old_values(ws_out, row_details):
+    """Next to each changed row, paste old values starting at column M with red on changed cells."""
+    for excel_row, (old_vals, changed_cols) in row_details.items():
+        for i, val in enumerate(old_vals):
+            cell = ws_out.cell(row=excel_row, column=OLD_COL_START + i)
+            cell.value = val
+            if (i + 1) in changed_cols:
+                f = cell.font
+                cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
 
 
 def clear_print_area_xml(xlsx_path):
@@ -295,7 +308,8 @@ def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
 
         is_ls = sheet == 'LS'
         is_lb = sheet == 'LB'
-        changed = compare_sheet(ws_out, old_rows, new_rows, is_ls=is_ls, is_lb=is_lb)
+        changed, row_details = compare_sheet(ws_out, old_rows, new_rows, is_ls=is_ls, is_lb=is_lb)
+        write_old_values(ws_out, row_details)
 
         if is_ls:
             child_to_parent = build_ls_child_to_parent(new_rows)
