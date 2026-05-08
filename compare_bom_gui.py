@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
+from openpyxl.utils import get_column_letter
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 YELLOW_FILL = PatternFill(fill_type='solid', start_color='FFFFFF00', end_color='FFFFFF00')
@@ -310,6 +311,9 @@ def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
         is_lb = sheet == 'LB'
         changed, row_details = compare_sheet(ws_out, old_rows, new_rows, is_ls=is_ls, is_lb=is_lb)
         write_old_values(ws_out, row_details)
+        for i in range(1, MAX_COL + 1):
+            ws_out.column_dimensions[get_column_letter(OLD_COL_START + i - 1)].width = \
+                ws_out.column_dimensions[get_column_letter(i)].width
 
         if is_ls:
             child_to_parent = build_ls_child_to_parent(new_rows)
