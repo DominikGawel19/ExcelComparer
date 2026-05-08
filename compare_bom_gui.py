@@ -14,6 +14,7 @@ from openpyxl.styles import PatternFill, Font
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 YELLOW_FILL = PatternFill(fill_type='solid', start_color='FFFFFF00', end_color='FFFFFF00')
+DELETE_FILL = PatternFill(fill_type='solid', start_color='FFFFC7CE', end_color='FFFFC7CE')
 RED_COLOR = 'FFFF0000'
 MAX_COL = 9  # Fill yellow only up to column I
 DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
@@ -122,6 +123,61 @@ def apply_red_text(ws, excel_row, col_1based):
         underline=f.underline, strike=f.strike, vertAlign=f.vertAlign,
         color=RED_COLOR
     )
+
+
+def find_deleted(old_rows, new_rows, is_ls=False, is_lb=False):
+    """Return vals of rows present in old but absent (or fewer) in new, in old order."""
+    new_occ = {}
+    for _, new_vals in new_rows:
+        if is_lb:
+            if not is_lb_data_row(new_vals):
+                continue
+            key = str(new_vals[0]).strip()
+        else:
+            if not is_pozycja(new_vals[0]):
+                continue
+            pozycja = str(new_vals[0]).strip()
+            key = (pozycja, 'parent' if is_parent_ls(new_vals) else 'child') if is_ls else pozycja
+        new_occ[key] = new_occ.get(key, 0) + 1
+
+    old_seen = {}
+    deleted = []
+    for _, vals in old_rows:
+        if is_lb:
+            if not is_lb_data_row(vals):
+                continue
+            key = str(vals[0]).strip()
+        else:
+            if not is_pozycja(vals[0]):
+                continue
+            pozycja = str(vals[0]).strip()
+            key = (pozycja, 'parent' if is_parent_ls(vals) else 'child') if is_ls else pozycja
+        old_seen[key] = old_seen.get(key, 0) + 1
+        if old_seen[key] > new_occ.get(key, 0):
+            deleted.append(vals)
+    return deleted
+
+
+def append_deleted_rows(ws_out, deleted):
+    if not deleted:
+        return
+    ws_out.append([])
+    ws_out.append(['USUNIĘTE POZYCJE:'])
+    hdr = ws_out.max_row
+    for c in range(1, MAX_COL + 1):
+        cell = ws_out.cell(row=hdr, column=c)
+        cell.fill = DELETE_FILL
+        f = cell.font
+        cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
+
+    for vals in deleted:
+        ws_out.append(vals)
+        r = ws_out.max_row
+        for c in range(1, MAX_COL + 1):
+            cell = ws_out.cell(row=r, column=c)
+            cell.fill = DELETE_FILL
+            f = cell.font
+            cell.font = Font(name=f.name, size=f.size, strike=True, color=RED_COLOR)
 
 
 def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
@@ -251,7 +307,10 @@ def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
                         changed_children.add(str(vals[0]).strip())
             mark_ls_parents(ws_out, new_rows, changed_children, child_to_parent)
 
-        log_cb(f'  {sheet}: {len(changed)} zmienione pozycje')
+        deleted = find_deleted(old_rows, new_rows, is_ls=is_ls, is_lb=is_lb)
+        append_deleted_rows(ws_out, deleted)
+
+        log_cb(f'  {sheet}: {len(changed)} zmienione, {len(deleted)} usunięte')
         total_changed += len(changed)
 
     log_cb('Zapisywanie...')
