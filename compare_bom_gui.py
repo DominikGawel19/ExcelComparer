@@ -175,7 +175,6 @@ def append_deleted_rows(ws_out, deleted):
         r = ws_out.max_row
         for c in range(1, MAX_COL + 1):
             cell = ws_out.cell(row=r, column=c)
-            cell.fill = DELETE_FILL
             f = cell.font
             cell.font = Font(name=f.name, size=f.size, strike=True)
 
