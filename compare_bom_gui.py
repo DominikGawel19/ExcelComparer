@@ -242,6 +242,8 @@ def write_old_values(ws_out, row_details):
     """Next to each changed row, paste old values starting at column M with red on changed cells."""
     for excel_row, (old_vals, changed_cols) in row_details.items():
         for i, val in enumerate(old_vals):
+            if isinstance(val, float):
+                val = round(val, 2)
             cell = ws_out.cell(row=excel_row, column=OLD_COL_START + i)
             cell.value = val
             if (i + 1) in changed_cols:
