@@ -162,7 +162,7 @@ def append_deleted_rows(ws_out, deleted):
     if not deleted:
         return
     ws_out.append([])
-    ws_out.append(['USUNIĘTE POZYCJE:'])
+    ws_out.append(['DELETED ELEMENTS:'])
     hdr = ws_out.max_row
     for c in range(1, MAX_COL + 1):
         cell = ws_out.cell(row=hdr, column=c)
@@ -177,7 +177,7 @@ def append_deleted_rows(ws_out, deleted):
             cell = ws_out.cell(row=r, column=c)
             cell.fill = DELETE_FILL
             f = cell.font
-            cell.font = Font(name=f.name, size=f.size, strike=True, color=RED_COLOR)
+            cell.font = Font(name=f.name, size=f.size, strike=True)
 
 
 def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
