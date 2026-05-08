@@ -466,12 +466,13 @@ class App(TkinterDnD.Tk):
         self.log['yscrollcommand'] = sb.set
 
         # ── Clean section ──
+        CLEAN_HINT = 'Przeciągnij plik z porównaniem lub kliknij aby wybrać ścieżkę'
         clean_frame = tk.LabelFrame(self, text='Przygotuj do druku', padx=8, pady=8)
         clean_frame.pack(fill='x', pady=(8, 4))
 
         self.clean_drop = tk.Label(
             clean_frame,
-            text=HINT,
+            text=CLEAN_HINT,
             relief='groove', bg='#f0f0f0',
             width=56, height=3,
             wraplength=420, justify='center',
@@ -482,7 +483,7 @@ class App(TkinterDnD.Tk):
         clean_clear_btn = tk.Button(
             clean_frame, text='✕', width=3,
             fg='#c62828', relief='flat', cursor='hand2',
-            command=lambda: self._clear_path(self.clean_path, self.clean_drop, HINT)
+            command=lambda: self._clear_path(self.clean_path, self.clean_drop, CLEAN_HINT)
         )
         clean_clear_btn.pack(side='left')
 
