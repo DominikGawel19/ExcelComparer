@@ -16,7 +16,7 @@ from tkinterdnd2 import TkinterDnD, DND_FILES
 YELLOW_FILL = PatternFill(fill_type='solid', start_color='FFFFFF00', end_color='FFFFFF00')
 RED_COLOR = 'FFFF0000'
 MAX_COL = 9  # Fill yellow only up to column I
-DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB']
+DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
@@ -212,7 +212,10 @@ def clear_print_area_xml(xlsx_path):
     os.replace(tmp_path, xlsx_path)
 
 
-def run_comparison(old_file, new_file, data_start, log_cb):
+def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
+    if lg_data_start is None:
+        lg_data_start = data_start
+
     out_dir = os.path.dirname(os.path.abspath(new_file))
     base_name = os.path.splitext(os.path.basename(new_file))[0]
     out_file = os.path.join(out_dir, base_name + '_POROWNANIE.xlsx')
@@ -230,8 +233,9 @@ def run_comparison(old_file, new_file, data_start, log_cb):
             log_cb(f'  {sheet}: pominięty (brak w jednym z plików)')
             continue
 
-        old_rows = read_data_rows(wb_old_d, sheet, data_start)
-        new_rows = read_data_rows(wb_new_d, sheet, data_start)
+        sheet_start = lg_data_start if sheet == 'LG' else data_start
+        old_rows = read_data_rows(wb_old_d, sheet, sheet_start)
+        new_rows = read_data_rows(wb_new_d, sheet, sheet_start)
         ws_out = wb_out[sheet]
 
         is_ls = sheet == 'LS'
@@ -273,6 +277,7 @@ class App(TkinterDnD.Tk):
         self.old_path = tk.StringVar()
         self.new_path = tk.StringVar()
         self.start_row = tk.StringVar(value='11')
+        self.start_row_lg = tk.StringVar(value='11')
 
         self._build_ui()
 
@@ -311,11 +316,17 @@ class App(TkinterDnD.Tk):
 
             setattr(self, attr, drop)
 
-        # ── Start row ──
+        # ── Start rows ──
         row_frame = tk.Frame(self)
         row_frame.pack(fill='x', pady=6)
-        tk.Label(row_frame, text='Pierwszy wiersz danych (nagłówek +1):').pack(side='left')
+        tk.Label(row_frame, text='Pierwszy wiersz danych (LM/LP/LS/LW/LB):').pack(side='left')
         tk.Spinbox(row_frame, from_=2, to=999, textvariable=self.start_row,
+                   width=6).pack(side='left', padx=8)
+
+        row_frame_lg = tk.Frame(self)
+        row_frame_lg.pack(fill='x', pady=2)
+        tk.Label(row_frame_lg, text='Pierwszy wiersz danych LG:').pack(side='left')
+        tk.Spinbox(row_frame_lg, from_=2, to=999, textvariable=self.start_row_lg,
                    width=6).pack(side='left', padx=8)
 
         # ── Run button ──
@@ -377,6 +388,13 @@ class App(TkinterDnD.Tk):
         except ValueError:
             messagebox.showerror('Błąd', 'Wiersz startowy musi być liczbą ≥ 2.')
             return
+        try:
+            start_lg = int(self.start_row_lg.get())
+            if start_lg < 2:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror('Błąd', 'Wiersz startowy LG musi być liczbą ≥ 2.')
+            return
 
         self.run_btn.config(state='disabled', text='Przetwarzanie...')
         self.log.config(state='normal')
@@ -385,7 +403,7 @@ class App(TkinterDnD.Tk):
 
         def task():
             try:
-                run_comparison(old, new, start, self._log)
+                run_comparison(old, new, start, self._log, lg_data_start=start_lg)
             except Exception as ex:
                 self._log(f'\n❌ Błąd: {ex}')
             finally:
