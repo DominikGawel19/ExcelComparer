@@ -231,9 +231,12 @@ def append_deleted_rows(ws_out, deleted, n_cols=None):
 
 
 def find_generic_deleted(old_data, new_data):
-    """Return vals of rows present in old but absent (or fewer) in new, using generic row key."""
+    """Return vals of rows present in old but absent (or fewer) in new, using generic row key.
+    Only considers rows with a non-empty first column (position column) to skip summary rows."""
     new_occ = {}
     for _, vals in new_data:
+        if not vals or vals[0] is None or str(vals[0]).strip() == '':
+            continue
         key = get_generic_row_key(vals)
         if key is not None:
             new_occ[key] = new_occ.get(key, 0) + 1
@@ -241,6 +244,8 @@ def find_generic_deleted(old_data, new_data):
     old_seen = {}
     deleted = []
     for _, vals in old_data:
+        if not vals or vals[0] is None or str(vals[0]).strip() == '':
+            continue
         key = get_generic_row_key(vals)
         if key is None:
             continue
@@ -372,61 +377,55 @@ def clear_print_area_xml(xlsx_path):
 
 
 def clean_comparison_file(file_path, log_cb):
-    """Remove old-values columns (M+) from all sheets that have them, set print area."""
+    """Remove old-values columns (M+) from sheets that have them; set print area for ALL sheets."""
     wb = load_workbook(file_path)
 
-    # Auto-detect sheets that have old values written (any content in columns M–AB)
-    sheets_to_clean = [
+    # Detect sheets that have old values in columns M–AB
+    sheets_with_old = set(
         ws.title for ws in wb.worksheets
         if any(ws.cell(row=r, column=c).value is not None
                for r in range(1, min(ws.max_row + 1, 500))
                for c in range(OLD_COL_START, OLD_COL_START + 15))
-    ]
-    # Fallback: standard sheet names
-    if not sheets_to_clean:
-        sheets_to_clean = [s for s in DATA_SHEETS if s in wb.sheetnames]
+    )
+    # Fallback for standard sheet names
+    if not sheets_with_old:
+        sheets_with_old = set(s for s in DATA_SHEETS if s in wb.sheetnames)
 
-    if not sheets_to_clean:
-        log_cb('Nie znaleziono arkuszy ze starymi wartościami.')
-        return
+    if sheets_with_old:
+        log_cb(f'Czyszczenie starych wartości: {", ".join(sorted(sheets_with_old))}')
+    else:
+        log_cb('Brak starych wartości — ustawiam tylko obszary wydruku.')
 
-    log_cb(f'Czyszczenie arkuszy: {", ".join(sheets_to_clean)}')
-
-    for sheet in sheets_to_clean:
+    for sheet in wb.sheetnames:
         ws = wb[sheet]
 
-        # Clear values and formatting from column M onwards
-        for row in ws.iter_rows():
-            for cell in row:
-                if cell.column >= OLD_COL_START:
-                    cell.value = None
-                    cell.fill = PatternFill()
-                    cell.font = Font()
+        # Clear old values only from sheets that have them
+        if sheet in sheets_with_old:
+            for row in ws.iter_rows():
+                for cell in row:
+                    if cell.column >= OLD_COL_START:
+                        cell.value = None
+                        cell.fill = PatternFill()
+                        cell.font = Font()
+            for col_idx in range(OLD_COL_START, OLD_COL_START + 60):
+                col_letter = get_column_letter(col_idx)
+                if col_letter in ws.column_dimensions:
+                    del ws.column_dimensions[col_letter]
 
-        # Remove column widths for M+ columns
-        for col_idx in range(OLD_COL_START, OLD_COL_START + 60):
-            col_letter = get_column_letter(col_idx)
-            if col_letter in ws.column_dimensions:
-                del ws.column_dimensions[col_letter]
-
-        # Detect data column range from the column-label header row
-        data_start_row, right_col = detect_data_start(ws)
-
-        # Extend right_col to cover wider content in the title/header rows above data
-        for r in range(1, data_start_row):
-            for c in range(OLD_COL_START - 1, right_col, -1):
-                if ws.cell(row=r, column=c).value is not None:
-                    right_col = c
-                    break
-
-        # Find last data row (stop before DELETED ELEMENTS section)
+        # Find rightmost non-empty column (capped at col L) and last data row
+        # by scanning actual content — works for all sheet structures.
+        right_col = 1
         last_row = 1
+        cap = min(OLD_COL_START - 1, ws.max_column)
         for r in range(1, ws.max_row + 1):
             if ws.cell(row=r, column=1).value == 'DELETED ELEMENTS:':
                 break
-            if any(ws.cell(row=r, column=c).value is not None
-                   for c in range(1, right_col + 1)):
-                last_row = r
+            for c in range(cap, 0, -1):
+                if ws.cell(row=r, column=c).value is not None:
+                    if c > right_col:
+                        right_col = c
+                    last_row = r
+                    break
 
         ws.print_area = f'A1:{get_column_letter(right_col)}{last_row}'
         log_cb(f'  {sheet}: obszar wydruku A1:{get_column_letter(right_col)}{last_row}')
@@ -599,6 +598,10 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
 
     log_cb('Zapisywanie...')
     wb_out.save(out_file)
+
+    log_cb('Czyszczenie starych obszarów wydruku...')
+    clear_print_area_xml(out_file)
+
     log_cb(f'\nGotowe! Łącznie zmian: {total_changed}')
     log_cb(f'Plik: {out_file}')
     return out_file
