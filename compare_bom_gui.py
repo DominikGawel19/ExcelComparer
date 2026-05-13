@@ -208,13 +208,14 @@ def find_deleted(old_rows, new_rows, is_ls=False, is_lb=False):
     return deleted
 
 
-def append_deleted_rows(ws_out, deleted):
+def append_deleted_rows(ws_out, deleted, n_cols=None):
     if not deleted:
         return
+    effective_cols = n_cols if n_cols is not None else MAX_COL
     ws_out.append([])
     ws_out.append(['DELETED ELEMENTS:'])
     hdr = ws_out.max_row
-    for c in range(1, MAX_COL + 1):
+    for c in range(1, effective_cols + 1):
         cell = ws_out.cell(row=hdr, column=c)
         cell.fill = DELETE_FILL
         f = cell.font
@@ -223,10 +224,30 @@ def append_deleted_rows(ws_out, deleted):
     for vals in deleted:
         ws_out.append(vals)
         r = ws_out.max_row
-        for c in range(1, MAX_COL + 1):
+        for c in range(1, effective_cols + 1):
             cell = ws_out.cell(row=r, column=c)
             f = cell.font
             cell.font = Font(name=f.name, size=f.size, strike=True)
+
+
+def find_generic_deleted(old_data, new_data):
+    """Return vals of rows present in old but absent (or fewer) in new, using generic row key."""
+    new_occ = {}
+    for _, vals in new_data:
+        key = get_generic_row_key(vals)
+        if key is not None:
+            new_occ[key] = new_occ.get(key, 0) + 1
+
+    old_seen = {}
+    deleted = []
+    for _, vals in old_data:
+        key = get_generic_row_key(vals)
+        if key is None:
+            continue
+        old_seen[key] = old_seen.get(key, 0) + 1
+        if old_seen[key] > new_occ.get(key, 0):
+            deleted.append(vals)
+    return deleted
 
 
 def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
@@ -569,7 +590,11 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
                 changed_count += 1
 
         write_generic_old_values(ws_out_s, row_details, max_data_col)
-        log_cb(f'  {sheet}: {changed_count} zmienione wiersze')
+
+        deleted = find_generic_deleted(old_data, new_data)
+        append_deleted_rows(ws_out_s, deleted, n_cols=max_data_col)
+
+        log_cb(f'  {sheet}: {changed_count} zmienione, {len(deleted)} usunięte')
         total_changed += changed_count
 
     log_cb('Zapisywanie...')
