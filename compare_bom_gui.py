@@ -299,6 +299,25 @@ def write_old_values(ws_out, row_details):
                 cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
 
 
+def write_generic_old_values(ws_out, row_details, max_data_col):
+    """Write old values starting at column M for each changed row (generic mode)."""
+    for excel_row, (old_vals, changed_cols) in row_details.items():
+        for i in range(max_data_col):
+            val = old_vals[i] if i < len(old_vals) else None
+            if isinstance(val, float):
+                val = round(val, 2)
+            cell = ws_out.cell(row=excel_row, column=OLD_COL_START + i)
+            cell.value = val
+            if (i + 1) in changed_cols:
+                f = cell.font
+                cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
+    for i in range(max_data_col):
+        src = get_column_letter(i + 1)
+        dst = get_column_letter(OLD_COL_START + i)
+        if src in ws_out.column_dimensions:
+            ws_out.column_dimensions[dst].width = ws_out.column_dimensions[src].width
+
+
 def clear_print_area_xml(xlsx_path):
     """
     Remove all Print_Area defined names directly from workbook.xml inside the xlsx zip.
@@ -332,13 +351,27 @@ def clear_print_area_xml(xlsx_path):
 
 
 def clean_comparison_file(file_path, log_cb):
-    """Remove old-values columns (M+) from every sheet and set print area to A–I data range."""
+    """Remove old-values columns (M+) from all sheets that have them, set print area."""
     wb = load_workbook(file_path)
 
-    for sheet in DATA_SHEETS:
-        if sheet not in wb.sheetnames:
-            log_cb(f'  {sheet}: pominięty (brak arkusza)')
-            continue
+    # Auto-detect sheets that have old values written (any content in columns M–AB)
+    sheets_to_clean = [
+        ws.title for ws in wb.worksheets
+        if any(ws.cell(row=r, column=c).value is not None
+               for r in range(1, min(ws.max_row + 1, 500))
+               for c in range(OLD_COL_START, OLD_COL_START + 15))
+    ]
+    # Fallback: standard sheet names
+    if not sheets_to_clean:
+        sheets_to_clean = [s for s in DATA_SHEETS if s in wb.sheetnames]
+
+    if not sheets_to_clean:
+        log_cb('Nie znaleziono arkuszy ze starymi wartościami.')
+        return
+
+    log_cb(f'Czyszczenie arkuszy: {", ".join(sheets_to_clean)}')
+
+    for sheet in sheets_to_clean:
         ws = wb[sheet]
 
         # Clear values and formatting from column M onwards
@@ -349,23 +382,26 @@ def clean_comparison_file(file_path, log_cb):
                     cell.fill = PatternFill()
                     cell.font = Font()
 
-        # Reset column widths for M+ columns
-        for i in range(OLD_COL_START, OLD_COL_START + MAX_COL):
-            col = get_column_letter(i)
-            if col in ws.column_dimensions:
-                ws.column_dimensions[col].width = ws.column_dimensions[col].width
-                del ws.column_dimensions[col]
+        # Remove column widths for M+ columns
+        for col_idx in range(OLD_COL_START, OLD_COL_START + 60):
+            col_letter = get_column_letter(col_idx)
+            if col_letter in ws.column_dimensions:
+                del ws.column_dimensions[col_letter]
 
-        # Find last row with data in columns A–I (stop before DELETED ELEMENTS section)
+        # Detect data column range from header
+        _, right_col = detect_data_start(ws)
+
+        # Find last data row (stop before DELETED ELEMENTS section)
         last_row = 1
         for r in range(1, ws.max_row + 1):
             if ws.cell(row=r, column=1).value == 'DELETED ELEMENTS:':
                 break
-            if any(ws.cell(row=r, column=c).value is not None for c in range(1, MAX_COL + 1)):
+            if any(ws.cell(row=r, column=c).value is not None
+                   for c in range(1, right_col + 1)):
                 last_row = r
 
-        ws.print_area = f'A1:{get_column_letter(MAX_COL)}{last_row}'
-        log_cb(f'  {sheet}: obszar wydruku A1:I{last_row}')
+        ws.print_area = f'A1:{get_column_letter(right_col)}{last_row}'
+        log_cb(f'  {sheet}: obszar wydruku A1:{get_column_letter(right_col)}{last_row}')
 
     log_cb('Zapisywanie...')
     wb.save(file_path)
@@ -432,12 +468,15 @@ def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
     return out_file
 
 
-def run_generic_comparison(old_file, new_file, log_cb):
+def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
     """
-    Compare all sheets present in both files.
+    Compare all sheets present in both files (minus excluded_sheets).
     Auto-detects header row and data start for each sheet.
-    Uses the first non-empty cell value per row as the row key.
+    Writes old values for changed rows starting at column M.
     """
+    if excluded_sheets is None:
+        excluded_sheets = set()
+
     out_dir = os.path.dirname(os.path.abspath(new_file))
     base_name = os.path.splitext(os.path.basename(new_file))[0]
     out_file = os.path.join(out_dir, base_name + '_POROWNANIE.xlsx')
@@ -450,8 +489,12 @@ def run_generic_comparison(old_file, new_file, log_cb):
     wb_out = load_workbook(out_file)
 
     old_sheet_set = set(wb_old_d.sheetnames)
-    sheets_to_compare = [s for s in wb_out.sheetnames if s in old_sheet_set]
-    log_cb(f'Wspólne arkusze ({len(sheets_to_compare)}): {", ".join(sheets_to_compare)}')
+    sheets_to_compare = [s for s in wb_out.sheetnames
+                         if s in old_sheet_set and s not in excluded_sheets]
+    skipped = [s for s in wb_out.sheetnames if s in old_sheet_set and s in excluded_sheets]
+    log_cb(f'Porównywane ({len(sheets_to_compare)}): {", ".join(sheets_to_compare)}')
+    if skipped:
+        log_cb(f'Pominięte: {", ".join(skipped)}')
 
     total_changed = 0
     for sheet in sheets_to_compare:
@@ -482,6 +525,7 @@ def run_generic_comparison(old_file, new_file, log_cb):
 
         occurrence = {}
         changed_count = 0
+        row_details = {}
 
         for excel_row, new_vals in new_data:
             key = get_generic_row_key(new_vals)
@@ -514,8 +558,10 @@ def run_generic_comparison(old_file, new_file, log_cb):
                         underline=f.underline, strike=f.strike,
                         vertAlign=f.vertAlign, color=RED_COLOR
                     )
+                row_details[excel_row] = (old_vals, set(changed_cols))
                 changed_count += 1
 
+        write_generic_old_values(ws_out_s, row_details, max_data_col)
         log_cb(f'  {sheet}: {changed_count} zmienione wiersze')
         total_changed += changed_count
 
@@ -537,31 +583,13 @@ class App(TkinterDnD.Tk):
 
         self.old_path = tk.StringVar()
         self.new_path = tk.StringVar()
-        self.start_row = tk.StringVar(value='11')
-        self.start_row_lg = tk.StringVar(value='11')
         self.clean_path = tk.StringVar()
-        self.mode = tk.StringVar(value='standard')
+        self.sheet_vars = {}   # sheet_name -> BooleanVar (True = compare)
 
         self._build_ui()
 
     def _build_ui(self):
         HINT = 'Przeciągnij plik lub kliknij aby wybrać ścieżkę'
-
-        # ── Mode selection ──
-        mode_frame = tk.LabelFrame(self, text='Tryb porównania', padx=8, pady=6)
-        mode_frame.pack(fill='x', pady=(0, 6))
-        tk.Radiobutton(
-            mode_frame,
-            text='Standardowy  (arkusze LM / LP / LS / LW / LB / LG)',
-            variable=self.mode, value='standard',
-            command=self._on_mode_change
-        ).pack(anchor='w')
-        tk.Radiobutton(
-            mode_frame,
-            text='Automatyczny  (dowolne pliki – auto-detekcja wierszy i arkuszy)',
-            variable=self.mode, value='auto',
-            command=self._on_mode_change
-        ).pack(anchor='w')
 
         # ── File drop zones ──
         for label_text, var, attr, frame_attr in [
@@ -574,12 +602,10 @@ class App(TkinterDnD.Tk):
                 setattr(self, frame_attr, frame)
 
             drop = tk.Label(
-                frame,
-                text=HINT,
+                frame, text=HINT,
                 relief='groove', bg='#f0f0f0',
                 width=56, height=3,
-                wraplength=420, justify='center',
-                anchor='center'
+                wraplength=420, justify='center', anchor='center'
             )
             drop.pack(side='left', fill='x', expand=True, padx=(0, 6))
 
@@ -590,28 +616,17 @@ class App(TkinterDnD.Tk):
             )
             clear_btn.pack(side='left')
 
-            # Bind drop and click
             drop.drop_target_register(DND_FILES)
             drop.dnd_bind('<<Drop>>', lambda e, v=var, d=drop: self._on_drop(e, v, d))
             drop.bind('<Button-1>', lambda e, v=var, d=drop: self._browse(v, d))
-
             setattr(self, attr, drop)
 
-        # ── Start rows (standard mode only) ──
-        self.row_settings_frame = tk.Frame(self)
-        self.row_settings_frame.pack(fill='x', pady=2)
-
-        row_frame = tk.Frame(self.row_settings_frame)
-        row_frame.pack(fill='x', pady=4)
-        tk.Label(row_frame, text='Pierwszy wiersz danych (LM/LP/LS/LW/LB):').pack(side='left')
-        tk.Spinbox(row_frame, from_=2, to=999, textvariable=self.start_row,
-                   width=6).pack(side='left', padx=8)
-
-        row_frame_lg = tk.Frame(self.row_settings_frame)
-        row_frame_lg.pack(fill='x', pady=2)
-        tk.Label(row_frame_lg, text='Pierwszy wiersz danych LG:').pack(side='left')
-        tk.Spinbox(row_frame_lg, from_=2, to=999, textvariable=self.start_row_lg,
-                   width=6).pack(side='left', padx=8)
+        # ── Sheet selection (shown after both files are loaded) ──
+        self.sheets_frame = tk.LabelFrame(
+            self, text='Pomiń arkusze  (odznacz, aby wykluczyć z porównania)',
+            padx=8, pady=6
+        )
+        # Not packed yet — appears dynamically in _update_sheets()
 
         # ── Run button ──
         self.run_btn = tk.Button(self, text='▶  Porównaj', command=self._run,
@@ -635,21 +650,18 @@ class App(TkinterDnD.Tk):
         clean_frame.pack(fill='x', pady=(8, 4))
 
         self.clean_drop = tk.Label(
-            clean_frame,
-            text=CLEAN_HINT,
+            clean_frame, text=CLEAN_HINT,
             relief='groove', bg='#f0f0f0',
             width=56, height=3,
-            wraplength=420, justify='center',
-            anchor='center'
+            wraplength=420, justify='center', anchor='center'
         )
         self.clean_drop.pack(side='left', fill='x', expand=True, padx=(0, 6))
 
-        clean_clear_btn = tk.Button(
+        tk.Button(
             clean_frame, text='✕', width=3,
             fg='#c62828', relief='flat', cursor='hand2',
             command=lambda: self._clear_path(self.clean_path, self.clean_drop, CLEAN_HINT)
-        )
-        clean_clear_btn.pack(side='left')
+        ).pack(side='left')
 
         self.clean_drop.drop_target_register(DND_FILES)
         self.clean_drop.dnd_bind('<<Drop>>', lambda e: self._on_drop(e, self.clean_path, self.clean_drop))
@@ -663,21 +675,55 @@ class App(TkinterDnD.Tk):
         )
         self.clean_btn.pack(pady=(4, 8))
 
-    def _on_mode_change(self):
-        if self.mode.get() == 'standard':
-            self.row_settings_frame.pack(fill='x', pady=2, after=self.new_drop_frame)
-        else:
-            self.row_settings_frame.pack_forget()
+    def _update_sheets(self):
+        """Refresh sheet checkbox list after a file is loaded or cleared."""
+        for w in self.sheets_frame.winfo_children():
+            w.destroy()
+        self.sheet_vars = {}
+
+        old = self.old_path.get()
+        new = self.new_path.get()
+        if not old or not new or not os.path.isfile(old) or not os.path.isfile(new):
+            self.sheets_frame.pack_forget()
+            return
+
+        try:
+            wb_old = load_workbook(old, read_only=True)
+            wb_new = load_workbook(new, read_only=True)
+            old_names = set(wb_old.sheetnames)
+            common = [s for s in wb_new.sheetnames if s in old_names]
+            wb_old.close()
+            wb_new.close()
+        except Exception:
+            self.sheets_frame.pack_forget()
+            return
+
+        if not common:
+            self.sheets_frame.pack_forget()
+            return
+
+        cols = 3
+        for i, sheet in enumerate(common):
+            var = tk.BooleanVar(value=True)   # True = include in comparison
+            self.sheet_vars[sheet] = var
+            tk.Checkbutton(
+                self.sheets_frame, text=sheet, variable=var,
+                anchor='w', wraplength=160
+            ).grid(row=i // cols, column=i % cols, sticky='w', padx=6, pady=2)
+
+        self.sheets_frame.pack(fill='x', pady=4, after=self.new_drop_frame)
 
     def _clear_path(self, var, label, hint):
         var.set('')
         label.config(text=hint, bg='#f0f0f0')
+        self._update_sheets()
 
     def _on_drop(self, event, var, label):
-        path = event.data.strip().strip('{}')  # Windows wraps paths in {}
+        path = event.data.strip().strip('{}')
         if path.lower().endswith('.xlsx'):
             var.set(path)
             label.config(text=os.path.basename(path) + '\n' + path, bg='#e8f5e9')
+            self._update_sheets()
         else:
             messagebox.showerror('Błąd', 'Proszę przeciągnąć plik .xlsx')
 
@@ -689,6 +735,7 @@ class App(TkinterDnD.Tk):
         if path:
             var.set(path)
             label.config(text=os.path.basename(path) + '\n' + path, bg='#e8f5e9')
+            self._update_sheets()
 
     def _log(self, msg):
         self.log.config(state='normal')
@@ -706,47 +753,22 @@ class App(TkinterDnD.Tk):
             messagebox.showerror('Błąd', 'Wybierz nową listę materiałową.')
             return
 
+        excluded = {s for s, v in self.sheet_vars.items() if not v.get()}
+
         self.run_btn.config(state='disabled', text='Przetwarzanie...')
         self.log.config(state='normal')
         self.log.delete('1.0', 'end')
         self.log.config(state='disabled')
 
-        if self.mode.get() == 'auto':
-            def task():
-                try:
-                    run_generic_comparison(old, new, self._log)
-                except Exception as ex:
-                    self._log(f'\n❌ Błąd: {ex}')
-                finally:
-                    self.run_btn.config(state='normal', text='▶  Porównaj')
-        else:
+        def task():
             try:
-                start = int(self.start_row.get())
-                if start < 2:
-                    raise ValueError
-            except ValueError:
-                messagebox.showerror('Błąd', 'Wiersz startowy musi być liczbą ≥ 2.')
+                run_generic_comparison(old, new, self._log, excluded_sheets=excluded)
+            except Exception as ex:
+                self._log(f'\n❌ Błąd: {ex}')
+            finally:
                 self.run_btn.config(state='normal', text='▶  Porównaj')
-                return
-            try:
-                start_lg = int(self.start_row_lg.get())
-                if start_lg < 2:
-                    raise ValueError
-            except ValueError:
-                messagebox.showerror('Błąd', 'Wiersz startowy LG musi być liczbą ≥ 2.')
-                self.run_btn.config(state='normal', text='▶  Porównaj')
-                return
-
-            def task():
-                try:
-                    run_comparison(old, new, start, self._log, lg_data_start=start_lg)
-                except Exception as ex:
-                    self._log(f'\n❌ Błąd: {ex}')
-                finally:
-                    self.run_btn.config(state='normal', text='▶  Porównaj')
 
         threading.Thread(target=task, daemon=True).start()
-
 
     def _clean(self):
         path = self.clean_path.get()
