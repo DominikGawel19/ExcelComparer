@@ -388,8 +388,15 @@ def clean_comparison_file(file_path, log_cb):
             if col_letter in ws.column_dimensions:
                 del ws.column_dimensions[col_letter]
 
-        # Detect data column range from header
-        _, right_col = detect_data_start(ws)
+        # Detect data column range from the column-label header row
+        data_start_row, right_col = detect_data_start(ws)
+
+        # Extend right_col to cover wider content in the title/header rows above data
+        for r in range(1, data_start_row):
+            for c in range(OLD_COL_START - 1, right_col, -1):
+                if ws.cell(row=r, column=c).value is not None:
+                    right_col = c
+                    break
 
         # Find last data row (stop before DELETED ELEMENTS section)
         last_row = 1
