@@ -1,5 +1,6 @@
 import shutil
 import re
+from decimal import Decimal, ROUND_HALF_UP
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font
@@ -25,11 +26,15 @@ def vals_equal(a, b):
     if a_none or b_none:
         return False
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        fa, fb = float(a), float(b)
-        diff = abs(fa - fb)
-        mag = max(abs(fa), abs(fb), 1e-12)
-        return diff / mag < 1e-6  # 1ppm relative tolerance
+        # Porównanie z dokładnością do 2 miejsc po przecinku.
+        # Zaokrąglanie "w górę" dla połówek (2,375 -> 2,38).
+        return round2(a) == round2(b)
     return str(a).strip() == str(b).strip()
+
+
+def round2(x):
+    """Zaokrągla liczbę do 2 miejsc po przecinku (0,005 zaokrągla w górę)."""
+    return Decimal(str(float(x))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 
 def is_pozycja(val):
