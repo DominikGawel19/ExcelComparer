@@ -21,6 +21,7 @@ RED_COLOR = 'FFFF0000'
 MAX_COL = 9       # Fill yellow only up to column I
 OLD_COL_START = 13  # Column M — old values placed here for changed rows
 DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
+DELETED_HEADER = 'DELETED ELEMENTS:'
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
@@ -76,6 +77,23 @@ def read_data_rows(wb_data_only, sheet_name, data_start):
         vals = [ws.cell(row=excel_row, column=c).value
                 for c in range(1, ws.max_column + 1)]
         rows.append((excel_row, vals))
+    return rows
+
+
+def strip_deleted_section(rows):
+    """
+    Odcina sekcję 'DELETED ELEMENTS:' wraz z nagłówkiem i wszystkim pod nim.
+    Stary plik często sam jest wynikiem poprzedniego porównania — te wiersze nie
+    są danymi arkusza i nie mogą brać udziału w porównaniu, bo raz usunięta
+    pozycja pojawiałaby się na liście usuniętych w każdym kolejnym porównaniu.
+    rows: lista (excel_row, vals). Zwraca listę uciętą przed nagłówkiem.
+    """
+    for i, (_excel_row, vals) in enumerate(rows):
+        if not vals:
+            continue
+        first = vals[0]
+        if first is not None and str(first).strip().upper() == DELETED_HEADER:
+            return rows[:i]
     return rows
 
 
@@ -462,7 +480,11 @@ def run_comparison(old_file, new_file, data_start, log_cb, lg_data_start=None):
             continue
 
         sheet_start = lg_data_start if sheet == 'LG' else data_start
-        old_rows = read_data_rows(wb_old_d, sheet, sheet_start)
+        old_rows_all = read_data_rows(wb_old_d, sheet, sheet_start)
+        old_rows = strip_deleted_section(old_rows_all)
+        if len(old_rows) < len(old_rows_all):
+            log_cb(f'  {sheet}: pominięto starą sekcję DELETED ELEMENTS '
+                   f'({len(old_rows_all) - len(old_rows)} wierszy starego pliku)')
         new_rows = read_data_rows(wb_new_d, sheet, sheet_start)
         ws_out = wb_out[sheet]
 
@@ -539,9 +561,13 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
         log_cb(f'  {sheet}: wiersze od {data_start_new} (nowy), {data_start_old} (stary), '
                f'kolumny 1–{max_data_col}')
 
-        old_rows = [(r, [ws_old.cell(row=r, column=c).value
-                         for c in range(1, ws_old.max_column + 1)])
-                    for r in range(data_start_old, ws_old.max_row + 1)]
+        old_rows_all = [(r, [ws_old.cell(row=r, column=c).value
+                             for c in range(1, ws_old.max_column + 1)])
+                        for r in range(data_start_old, ws_old.max_row + 1)]
+        old_rows = strip_deleted_section(old_rows_all)
+        if len(old_rows) < len(old_rows_all):
+            log_cb(f'  {sheet}: pominięto starą sekcję DELETED ELEMENTS '
+                   f'({len(old_rows_all) - len(old_rows)} wierszy starego pliku)')
         new_rows = [(r, [ws_new.cell(row=r, column=c).value
                          for c in range(1, ws_new.max_column + 1)])
                     for r in range(data_start_new, ws_new.max_row + 1)]
