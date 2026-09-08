@@ -245,7 +245,7 @@ def append_deleted_rows(ws_out, deleted, n_cols=None):
         cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
 
     for vals in deleted:
-        ws_out.append(vals)
+        ws_out.append([round(v, 1) if isinstance(v, float) else v for v in vals])
         r = ws_out.max_row
         for c in range(1, effective_cols + 1):
             cell = ws_out.cell(row=r, column=c)
