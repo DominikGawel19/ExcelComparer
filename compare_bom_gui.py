@@ -456,6 +456,15 @@ def clean_comparison_file(file_path, log_cb):
                     last_row = r
                     break
 
+        # Scalone komórki z wartością — obejmij cały zakres scalenia (w prawo i w dół)
+        for m in ws.merged_cells.ranges:
+            if m.min_col > cap:
+                continue
+            if ws.cell(row=m.min_row, column=m.min_col).value is None:
+                continue
+            right_col = max(right_col, m.max_col)
+            last_row = max(last_row, m.max_row)
+
         ws.print_area = f'A1:{get_column_letter(right_col)}{last_row}'
         log_cb(f'  {sheet}: obszar wydruku A1:{get_column_letter(right_col)}{last_row}')
 
