@@ -235,18 +235,26 @@ def append_deleted_rows(ws_out, deleted, n_cols=None):
     if not deleted:
         return
     effective_cols = n_cols if n_cols is not None else MAX_COL
-    ws_out.append([])
-    ws_out.append(['DELETED ELEMENTS:'])
-    hdr = ws_out.max_row
+    # Ostatni wiersz z jakąkolwiek wartością (pomija puste, ale sformatowane wiersze)
+    last_filled = 0
+    for r in range(ws_out.max_row, 0, -1):
+        if any(cell.value is not None and str(cell.value).strip() != ''
+               for cell in ws_out[r]):
+            last_filled = r
+            break
+    hdr = last_filled + 1
+    ws_out.cell(row=hdr, column=1).value = 'DELETED ELEMENTS:'
     for c in range(1, effective_cols + 1):
         cell = ws_out.cell(row=hdr, column=c)
         cell.fill = DELETE_FILL
         f = cell.font
         cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
 
+    r = hdr
     for vals in deleted:
-        ws_out.append([round(v, 1) if isinstance(v, float) else v for v in vals])
-        r = ws_out.max_row
+        r += 1
+        for c, v in enumerate(vals, start=1):
+            ws_out.cell(row=r, column=c).value = round(v, 1) if isinstance(v, float) else v
         for c in range(1, effective_cols + 1):
             cell = ws_out.cell(row=r, column=c)
             f = cell.font
