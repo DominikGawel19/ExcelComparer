@@ -415,7 +415,7 @@ def clean_comparison_file(file_path, log_cb):
     sheets_with_old = set(
         ws.title for ws in wb.worksheets
         if any(ws.cell(row=r, column=c).value is not None
-               for r in range(1, min(ws.max_row + 1, 500))
+               for r in range(1, ws.max_row + 1)
                for c in range(OLD_COL_START, OLD_COL_START + 15))
     )
     # Fallback for standard sheet names
@@ -449,8 +449,6 @@ def clean_comparison_file(file_path, log_cb):
         last_row = 1
         cap = min(OLD_COL_START - 1, ws.max_column)
         for r in range(1, ws.max_row + 1):
-            if ws.cell(row=r, column=1).value == 'DELETED ELEMENTS:':
-                break
             for c in range(cap, 0, -1):
                 if ws.cell(row=r, column=c).value is not None:
                     if c > right_col:
