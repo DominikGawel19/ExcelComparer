@@ -22,6 +22,7 @@ MAX_COL = 9       # Fill yellow only up to column I
 OLD_COL_START = 13  # Column M — old values placed here for changed rows
 DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
 DELETED_HEADER = 'DELETED ELEMENTS:'
+DELETED_POSITIONS_LABEL = 'deleted positions'
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
@@ -95,6 +96,31 @@ def strip_deleted_section(rows):
         if first is not None and str(first).strip().upper() == DELETED_HEADER:
             return rows[:i]
     return rows
+
+
+def is_deleted_positions_label(v):
+    """True dla etykiety 'Deleted positions:' (ręczna sekcja usuniętych pozycji w plikach)."""
+    return isinstance(v, str) and v.strip().lower().startswith(DELETED_POSITIONS_LABEL)
+
+
+def strip_deleted_positions_section(rows):
+    """
+    Odcina sekcję 'Deleted positions:' (lista pozycji usuniętych we wcześniejszych
+    rewizjach, zawsze na końcu arkusza) — od wiersza, w którym etykieta stoi sama,
+    do końca. Etykieta wpisana obok zwykłych danych nie rozpoczyna sekcji.
+    rows: lista (excel_row, vals). Zwraca listę uciętą przed etykietą.
+    """
+    for i, (_excel_row, vals) in enumerate(rows):
+        filled = [v for v in vals if v is not None and str(v).strip() != '']
+        if len(filled) == 1 and is_deleted_positions_label(filled[0]):
+            return rows[:i]
+    return rows
+
+
+def blank_deleted_positions_labels(rows):
+    """Etykietę 'Deleted positions:' wpisaną obok zwykłych danych traktuje jak pustą komórkę."""
+    return [(r, [None if is_deleted_positions_label(v) else v for v in vals])
+            for r, vals in rows]
 
 
 def detect_data_start(ws):
@@ -738,9 +764,19 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
         if len(old_rows) < len(old_rows_all):
             log_cb(f'  {sheet}: pominięto starą sekcję DELETED ELEMENTS '
                    f'({len(old_rows_all) - len(old_rows)} wierszy starego pliku)')
-        new_rows = [(r, [ws_new.cell(row=r, column=c).value
-                         for c in range(1, ws_new.max_column + 1)])
-                    for r in range(data_start_new, ws_new.max_row + 1)]
+        new_rows_all = [(r, [ws_new.cell(row=r, column=c).value
+                             for c in range(1, ws_new.max_column + 1)])
+                        for r in range(data_start_new, ws_new.max_row + 1)]
+
+        # Sekcja 'Deleted positions:' na końcu arkusza nie bierze udziału w porównaniu
+        old_cut = strip_deleted_positions_section(old_rows)
+        new_rows = strip_deleted_positions_section(new_rows_all)
+        if len(old_cut) < len(old_rows) or len(new_rows) < len(new_rows_all):
+            log_cb(f'  {sheet}: pominięto sekcję Deleted positions '
+                   f'(stary: {len(old_rows) - len(old_cut)}, '
+                   f'nowy: {len(new_rows_all) - len(new_rows)} wierszy)')
+        old_rows = blank_deleted_positions_labels(old_cut)
+        new_rows = blank_deleted_positions_labels(new_rows)
 
         old_data = [(r, v) for r, v in old_rows if is_generic_data_row(v)]
         new_data = [(r, v) for r, v in new_rows if is_generic_data_row(v)]
