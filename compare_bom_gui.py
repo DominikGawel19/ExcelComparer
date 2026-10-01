@@ -11,8 +11,10 @@ from xml.etree import ElementTree as ET
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
 from openpyxl.styles import PatternFill, Font
-from openpyxl.utils import get_column_letter
+from openpyxl.packaging.custom import StringProperty
+from openpyxl.utils import get_column_letter, column_index_from_string
 from tkinterdnd2 import TkinterDnD, DND_FILES
 
 YELLOW_FILL = PatternFill(fill_type='solid', start_color='FFFFFF00', end_color='FFFFFF00')
@@ -23,6 +25,9 @@ OLD_COL_START = 13  # Column M — old values placed here for changed rows
 DATA_SHEETS = ['LM', 'LP', 'LS', 'LW', 'LB', 'LG']
 DELETED_HEADER = 'DELETED ELEMENTS:'
 DELETED_POSITIONS_LABEL = 'deleted positions'
+# Ukryte właściwości pliku porównania: w których kolumnach zapisano stare wartości
+OLD_COLS_MARKER = 'BOMCMP_old_cols'        # obecność = plik z tej wersji programu
+OLD_COLS_PREFIX = 'BOMCMP_old_cols:'       # + nazwa arkusza -> "start-koniec"
 
 
 # ── Comparison logic ─────────────────────────────────────────────────────────
@@ -554,21 +559,56 @@ def write_old_values(ws_out, row_details):
                 cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
 
 
-def write_generic_old_values(ws_out, row_details, max_data_col):
-    """Write old values starting at column M for each changed row (generic mode)."""
+def formula_ref_columns(formula):
+    """Numery kolumn (1-based), do których odwołuje się wzór w tym samym arkuszu."""
+    cols = set()
+    for letters in re.findall(r"(?<![A-Za-z0-9_.!$])\$?([A-Z]{1,3})\$?\d+(?![\dA-Za-z_(])", formula):
+        cols.add(column_index_from_string(letters))
+    for a, b in re.findall(r"(?<![A-Za-z0-9_.!$])\$?([A-Z]{1,3}):\$?([A-Z]{1,3})(?![\dA-Za-z_(])",
+                           formula):
+        cols.add(column_index_from_string(a))
+        cols.add(column_index_from_string(b))
+    return {c for c in cols if c <= 16384}
+
+
+def find_old_values_start(ws):
+    """
+    Pierwsza kolumna na stare wartości: M, chyba że od kolumny M są już jakieś dane
+    (np. kolumny pomocnicze) albo wzory z kolumn A–L się do nich odwołują —
+    wtedy jedna kolumna odstępu za ostatnią zajętą.
+    """
+    last = 0
+    for row in ws.iter_rows(min_col=OLD_COL_START):
+        for cell in row:
+            if cell.value is not None:
+                last = max(last, cell.column)
+    for row in ws.iter_rows(max_col=OLD_COL_START - 1):
+        for cell in row:
+            if isinstance(cell.value, str) and cell.value.startswith('='):
+                refs = formula_ref_columns(cell.value)
+                if refs:
+                    last = max(last, max(refs))
+    for m in ws.merged_cells.ranges:
+        if m.max_col >= OLD_COL_START:
+            last = max(last, m.max_col)
+    return OLD_COL_START if last < OLD_COL_START else last + 2
+
+
+def write_generic_old_values(ws_out, row_details, max_data_col, start_col=OLD_COL_START):
+    """Write old values starting at start_col (default column M) for each changed row (generic mode)."""
     for excel_row, (old_vals, changed_cols) in row_details.items():
         for i in range(max_data_col):
             val = old_vals[i] if i < len(old_vals) else None
             if isinstance(val, float):
                 val = round(val, 2)
-            cell = ws_out.cell(row=excel_row, column=OLD_COL_START + i)
+            cell = ws_out.cell(row=excel_row, column=start_col + i)
             cell.value = val
             if (i + 1) in changed_cols:
                 f = cell.font
                 cell.font = Font(name=f.name, size=f.size, bold=True, color=RED_COLOR)
     for i in range(max_data_col):
         src = get_column_letter(i + 1)
-        dst = get_column_letter(OLD_COL_START + i)
+        dst = get_column_letter(start_col + i)
         if src in ws_out.column_dimensions:
             ws_out.column_dimensions[dst].width = ws_out.column_dimensions[src].width
 
@@ -606,19 +646,35 @@ def clear_print_area_xml(xlsx_path):
 
 
 def clean_comparison_file(file_path, log_cb):
-    """Remove old-values columns (M+) from sheets that have them; set print area for ALL sheets."""
+    """Remove old-values columns from sheets that have them; set print area for ALL sheets.
+    Plik z obecnej wersji: czyści tylko zapamiętane kolumny starych wartości.
+    Plik ze starszej wersji: czyści kolumny od M tylko w zaznaczonych (żółtych) wierszach,
+    żeby nie usunąć kolumn pomocniczych, z których korzystają wzory."""
     wb = load_workbook(file_path)
+    props = wb.custom_doc_props
 
-    # Detect sheets that have old values in columns M–AB
-    sheets_with_old = set(
-        ws.title for ws in wb.worksheets
-        if any(ws.cell(row=r, column=c).value is not None
-               for r in range(1, ws.max_row + 1)
-               for c in range(OLD_COL_START, OLD_COL_START + 15))
-    )
-    # Fallback for standard sheet names
-    if not sheets_with_old:
-        sheets_with_old = set(s for s in DATA_SHEETS if s in wb.sheetnames)
+    old_cols = None  # sheet -> (start, end); None = plik ze starszej wersji programu
+    if OLD_COLS_MARKER in props.names:
+        old_cols = {}
+        for p in list(props):
+            if p.name.startswith(OLD_COLS_PREFIX):
+                sheet_name = p.name[len(OLD_COLS_PREFIX):]
+                start, end = (int(x) for x in str(p.value).split('-'))
+                if sheet_name in wb.sheetnames:
+                    old_cols[sheet_name] = (start, end)
+                del props[p.name]
+        sheets_with_old = set(old_cols)
+    else:
+        # Detect sheets that have old values in columns M–AB
+        sheets_with_old = set(
+            ws.title for ws in wb.worksheets
+            if any(ws.cell(row=r, column=c).value is not None
+                   for r in range(1, ws.max_row + 1)
+                   for c in range(OLD_COL_START, OLD_COL_START + 15))
+        )
+        # Fallback for standard sheet names
+        if not sheets_with_old:
+            sheets_with_old = set(s for s in DATA_SHEETS if s in wb.sheetnames)
 
     if sheets_with_old:
         log_cb(f'Czyszczenie starych wartości: {", ".join(sorted(sheets_with_old))}')
@@ -630,16 +686,39 @@ def clean_comparison_file(file_path, log_cb):
 
         # Clear old values only from sheets that have them
         if sheet in sheets_with_old:
-            for row in ws.iter_rows():
-                for cell in row:
-                    if cell.column >= OLD_COL_START:
-                        cell.value = None
-                        cell.fill = PatternFill()
-                        cell.font = Font()
-            for col_idx in range(OLD_COL_START, OLD_COL_START + 60):
-                col_letter = get_column_letter(col_idx)
-                if col_letter in ws.column_dimensions:
-                    del ws.column_dimensions[col_letter]
+            # Stare wartości są tylko w zaznaczonych (żółtych) wierszach
+            def is_marked(row):
+                return any(c.column < OLD_COL_START and c.fill.fill_type == 'solid'
+                           and c.fill.start_color.rgb == YELLOW_FILL.start_color.rgb
+                           for c in row)
+
+            if old_cols is not None:
+                start, end = old_cols[sheet]
+                for row in ws.iter_rows(max_col=end):
+                    if not is_marked(row):
+                        continue
+                    for cell in row:
+                        if cell.column >= start and not isinstance(cell, MergedCell):
+                            cell.value = None
+                            cell.fill = PatternFill()
+                            cell.font = Font()
+                for col_idx in range(start, end + 1):
+                    col_letter = get_column_letter(col_idx)
+                    if col_letter in ws.column_dimensions:
+                        del ws.column_dimensions[col_letter]
+            else:
+                for row in ws.iter_rows():
+                    if not is_marked(row):
+                        continue
+                    for cell in row:
+                        if cell.column >= OLD_COL_START and not isinstance(cell, MergedCell):
+                            cell.value = None
+                            cell.fill = PatternFill()
+                            cell.font = Font()
+                for col_idx in range(OLD_COL_START, OLD_COL_START + 60):
+                    col_letter = get_column_letter(col_idx)
+                    if col_letter in ws.column_dimensions:
+                        del ws.column_dimensions[col_letter]
 
         # Find rightmost non-empty column (capped at col L) and last data row
         # by scanning actual content — works for all sheet structures.
@@ -764,6 +843,7 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
         log_cb(f'Pominięte: {", ".join(skipped)}')
 
     total_changed = 0
+    old_cols = {}  # sheet -> (start, end) kolumn ze starymi wartościami
     for sheet in sheets_to_compare:
         ws_old = wb_old_d[sheet]
         ws_new = wb_new_d[sheet]
@@ -831,13 +911,28 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
                 row_details[excel_row] = (old_vals, set(changed_cols))
                 changed_count += 1
 
-        write_generic_old_values(ws_out_s, row_details, max_data_col)
+        old_start = find_old_values_start(ws_out_s)
+        if old_start != OLD_COL_START:
+            log_cb(f'  {sheet}: kolumny od M zajęte (dane pomocnicze/wzory) — stare wartości '
+                   f'od kolumny {get_column_letter(old_start)}')
+        write_generic_old_values(ws_out_s, row_details, max_data_col, start_col=old_start)
+        if row_details:
+            old_cols[sheet] = (old_start, old_start + max_data_col - 1)
 
         deleted = find_generic_deleted(unmatched_old)
         append_deleted_rows(ws_out_s, deleted, n_cols=max_data_col)
 
         log_cb(f'  {sheet}: {changed_count} zmienione, {len(deleted)} usunięte')
         total_changed += changed_count
+
+    # Zapamiętaj w pliku, gdzie są stare wartości — 'przygotuj do druku' czyści tylko je
+    props = wb_out.custom_doc_props
+    for name in list(props.names):
+        if name == OLD_COLS_MARKER or name.startswith(OLD_COLS_PREFIX):
+            del props[name]
+    props.append(StringProperty(name=OLD_COLS_MARKER, value='1'))
+    for sheet, (start, end) in old_cols.items():
+        props.append(StringProperty(name=OLD_COLS_PREFIX + sheet, value=f'{start}-{end}'))
 
     log_cb('Zapisywanie...')
     wb_out.save(out_file)
