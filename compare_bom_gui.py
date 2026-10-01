@@ -261,29 +261,101 @@ def append_deleted_rows(ws_out, deleted, n_cols=None):
             cell.font = Font(name=f.name, size=f.size, strike=True)
 
 
-def find_generic_deleted(old_data, new_data):
-    """Return vals of rows present in old but absent (or fewer) in new, using generic row key.
-    Only considers rows with a non-empty first column (position column) to skip summary rows."""
-    new_occ = {}
-    for _, vals in new_data:
-        if not vals or vals[0] is None or str(vals[0]).strip() == '':
-            continue
+def assign_generic_groups(rows):
+    """
+    Grupa (zestaw) każdego wiersza: klucz pierwszego wiersza bloku oddzielonego pustym wierszem.
+    Returns dict excel_row -> group key.
+    """
+    groups = {}
+    group = None
+    after_blank = True
+    for excel_row, vals in rows:
         key = get_generic_row_key(vals)
-        if key is not None:
-            new_occ[key] = new_occ.get(key, 0) + 1
-
-    old_seen = {}
-    deleted = []
-    for _, vals in old_data:
-        if not vals or vals[0] is None or str(vals[0]).strip() == '':
+        if key is None:
+            after_blank = True
             continue
+        if after_blank:
+            group = key
+            after_blank = False
+        groups[excel_row] = group
+    return groups
+
+
+def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col):
+    """
+    Dopasowuje wiersze nowego pliku do starego po kluczu.
+    Klucz "pozycyjny" (najwyżej raz w każdym zestawie, np. część w LS):
+      1) ten sam klucz w tym samym zestawie, 2) ten sam klucz gdziekolwiek.
+    Klucz powtarzalny (wiele razy w zestawie, np. profil w Grating):
+      1) identyczny wiersz gdziekolwiek, 2) ten sam klucz gdziekolwiek.
+    Zawsze w kolejności wystąpień.
+    Returns (dict new_excel_row -> old_vals, list of unmatched old vals in old order).
+    """
+    old_groups = assign_generic_groups(old_rows)
+    new_groups = assign_generic_groups(new_rows)
+
+    by_key_group = {}
+    by_key = {}
+    for i, (r, vals) in enumerate(old_data):
         key = get_generic_row_key(vals)
         if key is None:
             continue
-        old_seen[key] = old_seen.get(key, 0) + 1
-        if old_seen[key] > new_occ.get(key, 0):
-            deleted.append(vals)
-    return deleted
+        by_key_group.setdefault((key, old_groups.get(r)), []).append(i)
+        by_key.setdefault(key, []).append(i)
+
+    # Klucze, które w którymkolwiek pliku powtarzają się w obrębie jednego zestawu
+    repeated_keys = {k for (k, _g), idxs in by_key_group.items() if len(idxs) > 1}
+    new_key_group_count = {}
+    for r, vals in new_data:
+        key = get_generic_row_key(vals)
+        if key is None:
+            continue
+        kg = (key, new_groups.get(r))
+        new_key_group_count[kg] = new_key_group_count.get(kg, 0) + 1
+        if new_key_group_count[kg] > 1:
+            repeated_keys.add(key)
+
+    def identical(new_vals, old_vals):
+        for c in range(max_data_col):
+            nv = new_vals[c] if c < len(new_vals) else None
+            ov = old_vals[c] if c < len(old_vals) else None
+            if not vals_equal(nv, ov):
+                return False
+        return True
+
+    new_list = [(r, vals, get_generic_row_key(vals)) for r, vals in new_data]
+    used = set()
+    matched = {}
+
+    # (tylko_dla_powtarzalnych, ten_sam_zestaw, identyczny_wiersz)
+    passes = ((False, True, False), (True, False, True), (None, False, False))
+    for for_repeated, same_group, exact in passes:
+        for r, vals, key in new_list:
+            if key is None or r in matched:
+                continue
+            if for_repeated is not None and (key in repeated_keys) != for_repeated:
+                continue
+            candidates = (by_key_group.get((key, new_groups.get(r)), []) if same_group
+                          else by_key.get(key, []))
+            for i in candidates:
+                if i in used:
+                    continue
+                if exact and not identical(vals, old_data[i][1]):
+                    continue
+                used.add(i)
+                matched[r] = i
+                break
+
+    unmatched_old = [vals for i, (_, vals) in enumerate(old_data)
+                     if i not in used and get_generic_row_key(vals) is not None]
+    return {r: old_data[i][1] for r, i in matched.items()}, unmatched_old
+
+
+def find_generic_deleted(unmatched_old):
+    """Return vals of old rows that had no match in new.
+    Only considers rows with a non-empty first column (position column) to skip summary rows."""
+    return [vals for vals in unmatched_old
+            if vals and vals[0] is not None and str(vals[0]).strip() != '']
 
 
 def compare_sheet(ws_out, old_rows, new_rows, is_ls=False, is_lb=False):
@@ -590,13 +662,9 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
         old_data = [(r, v) for r, v in old_rows if is_generic_data_row(v)]
         new_data = [(r, v) for r, v in new_rows if is_generic_data_row(v)]
 
-        old_map = {}
-        for _, vals in old_data:
-            key = get_generic_row_key(vals)
-            if key is not None:
-                old_map.setdefault(key, []).append(vals)
+        matched, unmatched_old = match_generic_rows(old_rows, new_rows, old_data, new_data,
+                                                    max_data_col)
 
-        occurrence = {}
         changed_count = 0
         row_details = {}
 
@@ -605,15 +673,12 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
             if key is None:
                 continue
 
-            idx = occurrence.get(key, 0)
-            occurrence[key] = idx + 1
-
-            if key not in old_map or idx >= len(old_map[key]):
+            if excel_row not in matched:
                 apply_yellow_row(ws_out_s, excel_row, max_data_col)
                 changed_count += 1
                 continue
 
-            old_vals = old_map[key][idx]
+            old_vals = matched[excel_row]
             changed_cols = []
             for i in range(max_data_col):
                 nv = new_vals[i] if i < len(new_vals) else None
@@ -636,7 +701,7 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
 
         write_generic_old_values(ws_out_s, row_details, max_data_col)
 
-        deleted = find_generic_deleted(old_data, new_data)
+        deleted = find_generic_deleted(unmatched_old)
         append_deleted_rows(ws_out_s, deleted, n_cols=max_data_col)
 
         log_cb(f'  {sheet}: {changed_count} zmienione, {len(deleted)} usunięte')
