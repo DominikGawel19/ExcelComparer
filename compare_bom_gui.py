@@ -143,6 +143,73 @@ def get_generic_row_key(vals):
     return None
 
 
+LENGTH_TOLERANCE_MM = 1   # różnica długości do 1 mm pomijana, jeśli ciężar bez zmian
+
+
+def detect_column_types(ws, data_start, max_data_col):
+    """
+    Rozpoznaje kolumny po nagłówkach nad danymi (wiersze 1..data_start-1).
+    Returns dict: 'length', 'total_length', 'weight', 'qty' -> set of 1-based columns.
+    """
+    types = {'length': set(), 'total_length': set(), 'weight': set(), 'qty': set()}
+    for c in range(1, max_data_col + 1):
+        texts = [str(ws.cell(row=r, column=c).value).lower()
+                 for r in range(1, data_start)
+                 if isinstance(ws.cell(row=r, column=c).value, str)]
+        for t in texts:
+            if 'długość' in t or 'dlugosc' in t or 'length' in t:
+                if 'całkowita' in t or 'calkowita' in t or 'total' in t:
+                    types['total_length'].add(c)
+                else:
+                    types['length'].add(c)
+            if 'ciężar' in t or 'ciezar' in t or 'weight' in t or 'masa' in t or 'waga' in t:
+                types['weight'].add(c)
+            if 'ilość' in t or 'ilosc' in t or 'qty' in t or 'quantity' in t:
+                types['qty'].add(c)
+    return types
+
+
+def generic_changed_cols(new_vals, old_vals, max_data_col, col_types):
+    """
+    Lista zmienionych kolumn (1-based). Różnica długości do LENGTH_TOLERANCE_MM
+    (całkowitej długości: do tolerancji × ilość) jest pomijana, jeśli żadna kolumna
+    ciężaru się nie zmieniła.
+    """
+    changed = []
+    for i in range(max_data_col):
+        nv = new_vals[i] if i < len(new_vals) else None
+        ov = old_vals[i] if i < len(old_vals) else None
+        if not vals_equal(nv, ov):
+            changed.append(i + 1)
+    if not changed or not col_types['weight']:
+        return changed
+    if any(c in col_types['weight'] for c in changed):
+        return changed
+
+    def num(vals, c):
+        v = vals[c - 1] if c - 1 < len(vals) else None
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    qty = None
+    for c in col_types['qty']:
+        qty = num(new_vals, c)
+        if qty is not None:
+            break
+
+    result = []
+    for c in changed:
+        nv, ov = num(new_vals, c), num(old_vals, c)
+        if nv is not None and ov is not None:
+            if c in col_types['length'] and abs(nv - ov) <= LENGTH_TOLERANCE_MM + 1e-6:
+                continue
+            if c in col_types['total_length']:
+                limit = LENGTH_TOLERANCE_MM * (abs(qty) if qty else 1)
+                if abs(nv - ov) <= limit + 1e-6:
+                    continue
+        result.append(c)
+    return result
+
+
 def build_old_map(old_rows, is_ls=False, is_lb=False):
     """
     Returns dict: key -> list of vals (ordered by appearance).
@@ -281,7 +348,7 @@ def assign_generic_groups(rows):
     return groups
 
 
-def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col):
+def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col, col_types):
     """
     Dopasowuje wiersze nowego pliku do starego po kluczu.
     Klucz "pozycyjny" (najwyżej raz w każdym zestawie, np. część w LS):
@@ -316,12 +383,7 @@ def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col):
             repeated_keys.add(key)
 
     def identical(new_vals, old_vals):
-        for c in range(max_data_col):
-            nv = new_vals[c] if c < len(new_vals) else None
-            ov = old_vals[c] if c < len(old_vals) else None
-            if not vals_equal(nv, ov):
-                return False
-        return True
+        return not generic_changed_cols(new_vals, old_vals, max_data_col, col_types)
 
     new_list = [(r, vals, get_generic_row_key(vals)) for r, vals in new_data]
     used = set()
@@ -662,8 +724,9 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
         old_data = [(r, v) for r, v in old_rows if is_generic_data_row(v)]
         new_data = [(r, v) for r, v in new_rows if is_generic_data_row(v)]
 
+        col_types = detect_column_types(ws_new, data_start_new, max_data_col)
         matched, unmatched_old = match_generic_rows(old_rows, new_rows, old_data, new_data,
-                                                    max_data_col)
+                                                    max_data_col, col_types)
 
         changed_count = 0
         row_details = {}
@@ -679,12 +742,7 @@ def run_generic_comparison(old_file, new_file, log_cb, excluded_sheets=None):
                 continue
 
             old_vals = matched[excel_row]
-            changed_cols = []
-            for i in range(max_data_col):
-                nv = new_vals[i] if i < len(new_vals) else None
-                ov = old_vals[i] if i < len(old_vals) else None
-                if not vals_equal(nv, ov):
-                    changed_cols.append(i + 1)
+            changed_cols = generic_changed_cols(new_vals, old_vals, max_data_col, col_types)
 
             if changed_cols:
                 apply_yellow_row(ws_out_s, excel_row, max_data_col)
