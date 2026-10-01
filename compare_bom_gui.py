@@ -144,14 +144,17 @@ def get_generic_row_key(vals):
 
 
 LENGTH_TOLERANCE_MM = 1   # różnica długości do 1 mm pomijana, jeśli ciężar bez zmian
+WEIGHT_TOLERANCE_KG = Decimal('0.05')  # ciężar sztuki oznaczany dopiero od różnicy 0,05 kg
 
 
 def detect_column_types(ws, data_start, max_data_col):
     """
     Rozpoznaje kolumny po nagłówkach nad danymi (wiersze 1..data_start-1).
-    Returns dict: 'length', 'total_length', 'weight', 'qty' -> set of 1-based columns.
+    Returns dict: 'length', 'total_length', 'weight', 'total_weight', 'qty'
+    -> set of 1-based columns ('weight' zawiera też kolumny 'total_weight').
     """
-    types = {'length': set(), 'total_length': set(), 'weight': set(), 'qty': set()}
+    types = {'length': set(), 'total_length': set(), 'weight': set(),
+             'total_weight': set(), 'qty': set()}
     for c in range(1, max_data_col + 1):
         texts = [str(ws.cell(row=r, column=c).value).lower()
                  for r in range(1, data_start)
@@ -164,6 +167,8 @@ def detect_column_types(ws, data_start, max_data_col):
                     types['length'].add(c)
             if 'ciężar' in t or 'ciezar' in t or 'weight' in t or 'masa' in t or 'waga' in t:
                 types['weight'].add(c)
+                if 'całkowit' in t or 'calkowit' in t or 'total' in t:
+                    types['total_weight'].add(c)
             if 'ilość' in t or 'ilosc' in t or 'qty' in t or 'quantity' in t:
                 types['qty'].add(c)
     return types
@@ -171,9 +176,11 @@ def detect_column_types(ws, data_start, max_data_col):
 
 def generic_changed_cols(new_vals, old_vals, max_data_col, col_types):
     """
-    Lista zmienionych kolumn (1-based). Różnica długości do LENGTH_TOLERANCE_MM
-    (całkowitej długości: do tolerancji × ilość) jest pomijana, jeśli żadna kolumna
-    ciężaru się nie zmieniła.
+    Lista zmienionych kolumn (1-based).
+    Ciężar: różnica (po zaokrągleniu do 2 miejsc) mniejsza niż WEIGHT_TOLERANCE_KG
+    (ciężar całkowity: tolerancja × ilość) jest pomijana.
+    Długość: różnica do LENGTH_TOLERANCE_MM (całkowita długość: tolerancja × ilość)
+    jest pomijana, jeśli żaden ciężar się nie zmienił (poza tolerancją).
     """
     changed = []
     for i in range(max_data_col):
@@ -182,8 +189,6 @@ def generic_changed_cols(new_vals, old_vals, max_data_col, col_types):
         if not vals_equal(nv, ov):
             changed.append(i + 1)
     if not changed or not col_types['weight']:
-        return changed
-    if any(c in col_types['weight'] for c in changed):
         return changed
 
     def num(vals, c):
@@ -196,8 +201,24 @@ def generic_changed_cols(new_vals, old_vals, max_data_col, col_types):
         if qty is not None:
             break
 
-    result = []
+    after_weight = []
+    weight_changed = False
     for c in changed:
+        if c in col_types['weight']:
+            nv, ov = num(new_vals, c), num(old_vals, c)
+            if nv is not None and ov is not None:
+                limit = WEIGHT_TOLERANCE_KG
+                if c in col_types['total_weight'] and qty:
+                    limit = WEIGHT_TOLERANCE_KG * Decimal(str(abs(qty)))
+                if abs(round2(nv) - round2(ov)) < limit:
+                    continue
+            weight_changed = True
+        after_weight.append(c)
+    if weight_changed:
+        return after_weight
+
+    result = []
+    for c in after_weight:
         nv, ov = num(new_vals, c), num(old_vals, c)
         if nv is not None and ov is not None:
             if c in col_types['length'] and abs(nv - ov) <= LENGTH_TOLERANCE_MM + 1e-6:
