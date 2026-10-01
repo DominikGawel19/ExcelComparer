@@ -401,8 +401,8 @@ def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col, col
     Klucz "pozycyjny" (najwyżej raz w każdym zestawie, np. część w LS):
       1) ten sam klucz w tym samym zestawie, 2) ten sam klucz gdziekolwiek.
     Klucz powtarzalny (wiele razy w zestawie, np. profil w Grating):
-      1) identyczny wiersz gdziekolwiek, 2) ten sam klucz gdziekolwiek.
-    Zawsze w kolejności wystąpień.
+      1) identyczny wiersz gdziekolwiek, 2) najbardziej podobny wiersz z tym samym kluczem.
+    Przy równych możliwościach — w kolejności wystąpień.
     Returns (dict new_excel_row -> old_vals, list of unmatched old vals in old order).
     """
     old_groups = assign_generic_groups(old_rows)
@@ -437,12 +437,12 @@ def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col, col
     matched = {}
 
     # (tylko_dla_powtarzalnych, ten_sam_zestaw, identyczny_wiersz)
-    passes = ((False, True, False), (True, False, True), (None, False, False))
+    passes = ((False, True, False), (True, False, True), (False, False, False))
     for for_repeated, same_group, exact in passes:
         for r, vals, key in new_list:
             if key is None or r in matched:
                 continue
-            if for_repeated is not None and (key in repeated_keys) != for_repeated:
+            if (key in repeated_keys) != for_repeated:
                 continue
             candidates = (by_key_group.get((key, new_groups.get(r)), []) if same_group
                           else by_key.get(key, []))
@@ -454,6 +454,23 @@ def match_generic_rows(old_rows, new_rows, old_data, new_data, max_data_col, col
                 used.add(i)
                 matched[r] = i
                 break
+
+    # Klucz powtarzalny bez identycznego wiersza: łącz w pary najbardziej podobne wiersze
+    # (najmniej różniących się kolumn), przy remisie — w kolejności wystąpień.
+    pairs = []
+    for n_idx, (r, vals, key) in enumerate(new_list):
+        if key is None or r in matched or key not in repeated_keys:
+            continue
+        for i in by_key.get(key, []):
+            if i in used:
+                continue
+            n_diff = len(generic_changed_cols(vals, old_data[i][1], max_data_col, col_types))
+            pairs.append((n_diff, n_idx, i, r))
+    for _n_diff, _n_idx, i, r in sorted(pairs):
+        if i in used or r in matched:
+            continue
+        used.add(i)
+        matched[r] = i
 
     unmatched_old = [vals for i, (_, vals) in enumerate(old_data)
                      if i not in used and get_generic_row_key(vals) is not None]
